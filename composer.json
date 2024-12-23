@@ -17,7 +17,7 @@
     }
   },
   "require": {
-    "symfony/http-foundation": "^7.0",
+    "symfony/http-foundation": "^6.4.16",
     "league/flysystem": "^1.1.10",
     "league/flysystem-ziparchive": "^1.0"
   },
