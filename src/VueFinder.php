@@ -9,9 +9,7 @@ use League\Flysystem\FileNotFoundException;
 use League\Flysystem\FileExistsException;
 use League\Flysystem\FilesystemException;
 use League\Flysystem\MountManager;
-use League\Flysystem\ReadOnly\ReadOnlyFilesystemAdapter;
 use League\Flysystem\StorageAttributes;
-use League\Flysystem\ZipArchive\FilesystemZipArchiveProvider;
 use League\Flysystem\ZipArchive\ZipArchiveAdapter;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -112,13 +110,6 @@ class VueFinder
                 throw new Exception('The query does not have a valid method.');
             }
 
-            $adapter = $this->storageAdapters[$this->adapterKey];
-            $readonly_array = ['index', 'download', 'preview', 'search', 'subfolders'];
-
-            if ($adapter instanceof ReadOnlyFilesystemAdapter && !in_array($query, $readonly_array, true)) {
-                throw new Exception('This is a readonly storage.');
-            }
-
             $response = $this->$query();
         } catch (Exception $e) {
             $response = new JsonResponse(['status' => false, 'message' => $e->getMessage()], 400);
@@ -143,10 +134,12 @@ class VueFinder
     {
         $dirname = $this->request->get('path', $this->adapterKey.'://');
 
-        $listContents = $this->manager
-            ->listContents($dirname)
-            ->map(fn(StorageAttributes $attributes) => $attributes->jsonSerialize())
-            ->toArray();
+        $listContents = array_map(
+            function ($item) {
+                return $item; // The item is already a simple associative array in version 1.x
+            },
+            $this->manager->listContents($dirname)
+        );
 
         $files = array_merge(
             $this->directories($listContents),
@@ -180,15 +173,18 @@ class VueFinder
     {
         $dirname = $this->request->get('path', $this->adapterKey . '://');
 
-        $folders = $this->manager
-            ->listContents($dirname)
-            ->filter(fn(StorageAttributes $attributes) => $attributes->isDir())
-            ->map(fn(StorageAttributes $attributes) => [
-                'adapter' => $this->adapterKey,
-                'path' => $attributes->path(),
-                'basename' => basename($attributes->path()),
-            ])
-            ->toArray();;
+        $contents = $this->manager->listContents($dirname);
+        $folders = [];
+
+        foreach ($contents as $item) {
+            if ($item['type'] === 'dir') {
+                $folders[] = [
+                    'adapter' => $this->adapterKey,
+                    'path' => $item['path'],
+                    'basename' => basename($item['path']),
+                ];
+            }
+        }
 
         return new JsonResponse(compact(['folders']));
     }
@@ -202,10 +198,12 @@ class VueFinder
         $dirname = $this->request->get('path', $this->adapterKey.'://');
         $filter = $this->request->get('filter');
 
-        $listContents = $this->manager
-            ->listContents($dirname, true)
-            ->map(fn(StorageAttributes $attributes) => $attributes->jsonSerialize())
-            ->toArray();
+        $listContents = array_map(
+            function ($item) {
+                return $item; // Each item is already an associative array in version 1.x
+            },
+            $this->manager->listContents($dirname, true) // The second parameter enables recursive listing
+        );
 
         $files = array_values($this->files($listContents, $filter));
 
@@ -428,18 +426,17 @@ class VueFinder
         }
 
         $zipStorage = new Filesystem(
-            new ZipArchiveAdapter(
-                new FilesystemZipArchiveProvider(
-                    $zipFile,
-                ),
-            ),
+            new ZipArchiveAdapter($zipFile)
         );
 
         foreach ($items as $item) {
             if ($item['type'] == 'dir') {
-                $dirFiles = $this->manager->listContents($item['path'], true)
-                    ->filter(fn(StorageAttributes $attributes) => $attributes->isFile())
-                    ->toArray();
+                $dirFiles = array_filter(
+                    $this->manager->listContents($item['path'], true),
+                    function ($entry) {
+                        return $entry['type'] === 'file';
+                    }
+                );
                 foreach ($dirFiles as $dirFile) {
                     $file = $this->manager->readStream($dirFile->path());
                     $zipStorage->writeStream(str_replace($this->request->get('path'), '', $dirFile->path()), $file);
@@ -476,15 +473,16 @@ class VueFinder
 
         $zipStorage = new Filesystem(
             new ZipArchiveAdapter(
-                new FilesystemZipArchiveProvider(
-                    $zipFile,
-                ),
+                $zipFile,
             ),
         );
 
-        $dirFiles = $zipStorage->listContents('', true)
-            ->filter(fn(StorageAttributes $attributes) => $attributes->isFile())
-            ->toArray();
+        $dirFiles = array_filter(
+            $zipStorage->listContents('', true),
+            function ($entry) {
+                return isset($entry['type']) && $entry['type'] === 'file';
+            }
+        );
 
         $path = $this->request->get('path').DIRECTORY_SEPARATOR.pathinfo($zipItem, PATHINFO_FILENAME).DIRECTORY_SEPARATOR;
 
